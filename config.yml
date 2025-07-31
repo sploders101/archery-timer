@@ -1,0 +1,7 @@
+button_toggle: false
+left_timer:
+  color: red
+  music_file: /home/shaunkeys/Downloads/Benny Hill Show.mp3
+right_timer:
+  color: blue
+  music_file: /home/shaunkeys/Downloads/Henry Mancini - Baby Elephant Walk.mp3
