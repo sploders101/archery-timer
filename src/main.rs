@@ -6,6 +6,7 @@ use std::{
 
 use gdk::EventMask;
 use gio::prelude::*;
+use gpio_cdev::{Chip, LineRequestFlags};
 use gtk::prelude::*;
 
 use serde::{Deserialize, Serialize};
@@ -227,17 +228,24 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
         });
     }
 
-    glib::timeout_add_local(Duration::from_millis(1), move || {
-        if let Ok(timers) = timers.try_lock() {
-            let left_duration = timers.left_timer.get_duration().as_millis();
-            let right_duration = timers.right_timer.get_duration().as_millis();
-            drop(timers);
+    {
+        let window = window.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            if let Ok(timers) = timers.try_lock() {
+                let left_duration = timers.left_timer.get_duration().as_millis();
+                let right_duration = timers.right_timer.get_duration().as_millis();
+                drop(timers);
 
-            left_label.set_text(&format_timestamp(left_duration));
-            right_label.set_text(&format_timestamp(right_duration));
-        }
-        return glib::ControlFlow::Continue;
-    });
+                left_label.set_text(&format_timestamp(left_duration));
+                right_label.set_text(&format_timestamp(right_duration));
+            }
+            if let (Some(gdk_window), Some(display)) = (window.window(), gdk::Display::default()) {
+                let cursor = gdk::Cursor::for_display(&display, gdk::CursorType::BlankCursor);
+                gdk_window.set_cursor(cursor.as_ref());
+            }
+            return glib::ControlFlow::Continue;
+        });
+    }
 
     // Get ready for activation
     application.connect_activate(move |_| {
@@ -246,13 +254,11 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
 }
 
 fn format_timestamp(timestamp_ms: u128) -> String {
-    let ms = timestamp_ms % 1000;
     let timestamp_s = timestamp_ms / 1000;
     let s = timestamp_s % 60;
     let timestamp_m = timestamp_s / 60;
-    let m = timestamp_m % 60;
-    let timestamp_h = timestamp_m / 60;
-    format!("{timestamp_h:02}:{m:02}:{s:02}.{ms:03}")
+    let m = timestamp_m;
+    format!("{m:02}:{s:02}")
 }
 
 fn main() {
@@ -290,5 +296,41 @@ fn main() {
 }
 
 fn track_gpio(timers: Arc<Mutex<ApplicationState>>) {
-    
+    let mut chip = Chip::new("/dev/gpiochip0").unwrap();
+    let left_button = chip
+        .get_line(23)
+        .unwrap()
+        .request(
+            LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
+            0,
+            "read-input",
+        )
+        .unwrap();
+    let right_button = chip
+        .get_line(24)
+        .unwrap()
+        .request(
+            LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
+            0,
+            "read-input",
+        )
+        .unwrap();
+    loop {
+        let left_button = left_button.get_value().unwrap();
+        let right_button = right_button.get_value().unwrap();
+
+        match (left_button, right_button) {
+            (1, 1) => {
+                timers.lock().unwrap().clear_timers();
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            (1, 0) => {
+                timers.lock().unwrap().start_left_timer();
+            }
+            (0, 1) => {
+                timers.lock().unwrap().start_right_timer();
+            }
+            _ => {}
+        }
+    }
 }

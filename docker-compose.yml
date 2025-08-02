@@ -1,0 +1,12 @@
+services:
+  devcontainer:
+    build: .
+    init: true
+    volumes:
+      - .:/app
+    environment:
+      - TERM=alacritty
+      - COLORTERM=truecolor
+    command:
+      - sleep
+      - Infinity
