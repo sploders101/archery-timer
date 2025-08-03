@@ -12,6 +12,7 @@ use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, LineRequestFlags}
 use gtk::prelude::*;
 
 use futures::StreamExt;
+use rodio::Source;
 use serde::{Deserialize, Serialize};
 use simplelog::WriteLogger;
 use tokio::time::{Instant, Sleep};
@@ -74,7 +75,7 @@ impl AudioController {
         // Start new player
         let file = std::fs::File::open(file_path).unwrap();
         let sink = rodio::Sink::connect_new(self.output_stream.mixer());
-        sink.append(rodio::Decoder::try_from(file).unwrap());
+        sink.append(rodio::Decoder::try_from(file).unwrap().repeat_infinite());
         self.running_player = Some(sink);
     }
     pub fn stop(&mut self) {
