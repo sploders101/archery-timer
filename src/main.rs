@@ -347,9 +347,9 @@ struct ButtonTracker {
     left_state: bool,
     right_state: bool,
     // Allows us to check for more button events before executing the action
-    tick_timeout: MaybeFuture<Pin<Box<Sleep>>, ()>,
+    tick_timeout: Option<Pin<Box<Sleep>>>,
     // Allows us to re-trigger ourselves when the reset sequnce has elapsed.
-    reset_timeout: MaybeFuture<Pin<Box<Sleep>>, ()>,
+    reset_timeout: Option<Pin<Box<Sleep>>>,
     // Allows us to wait for buttons to be released before counting them
     // after a reset sequence
     reset_debounce: bool,
@@ -360,19 +360,19 @@ impl ButtonTracker {
             app,
             left_state: false,
             right_state: false,
-            tick_timeout: MaybeFuture(None),
-            reset_timeout: MaybeFuture(None),
+            tick_timeout: None,
+            reset_timeout: None,
             reset_debounce: false,
         };
     }
     pub async fn get_timeout(&mut self) -> TimeoutEvent {
         return tokio::select! {
-            _ = &mut self.tick_timeout => {
-                self.tick_timeout = MaybeFuture(None);
+            _ = MaybeFuture(self.tick_timeout.as_mut()) => {
+                self.tick_timeout = None;
                 TimeoutEvent::TickTimeout
             },
-            _ = &mut self.reset_timeout => {
-                self.reset_timeout = MaybeFuture(None);
+            _ = MaybeFuture(self.reset_timeout.as_mut()) => {
+                self.reset_timeout = None;
                 TimeoutEvent::ResetTimeout
             },
         };
@@ -384,14 +384,14 @@ impl ButtonTracker {
                 match (self.left_state, self.right_state) {
                     (true, true) if !self.reset_debounce => {
                         self.reset_timeout =
-                            MaybeFuture(Some(Box::pin(tokio::time::sleep(Duration::from_secs(3)))));
+                            Some(Box::pin(tokio::time::sleep(Duration::from_secs(3))));
                     }
                     (true, false) if !self.reset_debounce => {
-                        self.reset_timeout = MaybeFuture(None);
+                        self.reset_timeout = None;
                         self.app.lock().unwrap().start_left_timer();
                     }
                     (false, true) if !self.reset_debounce => {
-                        self.reset_timeout = MaybeFuture(None);
+                        self.reset_timeout = None;
                         self.app.lock().unwrap().start_right_timer();
                     }
                     (false, false) => {
@@ -417,9 +417,7 @@ impl ButtonTracker {
         log::debug!("{side:?} button set to {state}");
         *existing_state = state;
 
-        self.tick_timeout = MaybeFuture(Some(Box::pin(tokio::time::sleep(Duration::from_millis(
-            25,
-        )))));
+        self.tick_timeout = Some(Box::pin(tokio::time::sleep(Duration::from_millis(25))));
     }
 }
 
