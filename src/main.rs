@@ -1,15 +1,20 @@
 use std::{
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use gdk::EventMask;
 use gio::prelude::*;
-use gpio_cdev::{Chip, LineRequestFlags};
+use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, LineRequestFlags};
 use gtk::prelude::*;
 
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use simplelog::WriteLogger;
+use tokio::time::{Instant, Sleep};
 
 struct Timer {
     start_time: Option<Instant>,
@@ -262,6 +267,16 @@ fn format_timestamp(timestamp_ms: u128) -> String {
 }
 
 fn main() {
+    let log_file = std::fs::File::create("./archery-timer.log").unwrap();
+    WriteLogger::init(
+        log::LevelFilter::Debug,
+        simplelog::ConfigBuilder::new()
+            .add_filter_allow(String::from("archery_timer"))
+            .build(),
+        log_file,
+    )
+    .unwrap();
+
     let config_file = std::fs::File::open("./config.yml").unwrap();
     let config = serde_yaml::from_reader(config_file).unwrap();
     let timers = Arc::new(Mutex::new(ApplicationState::new(config)));
@@ -288,49 +303,169 @@ fn main() {
         });
     }
 
-    std::thread::spawn(move || {
-        track_gpio(Arc::clone(&timers));
-    });
+    {
+        let timers = Arc::clone(&timers);
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(track_gpio(Arc::clone(&timers)));
+        });
+    }
 
     application.run();
 }
 
-fn track_gpio(timers: Arc<Mutex<ApplicationState>>) {
-    let mut chip = Chip::new("/dev/gpiochip0").unwrap();
-    let left_button = chip
-        .get_line(23)
-        .unwrap()
-        .request(
-            LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
-            0,
-            "read-input",
-        )
-        .unwrap();
-    let right_button = chip
-        .get_line(24)
-        .unwrap()
-        .request(
-            LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
-            0,
-            "read-input",
-        )
-        .unwrap();
-    loop {
-        let left_button = left_button.get_value().unwrap();
-        let right_button = right_button.get_value().unwrap();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonSide {
+    Left,
+    Right,
+}
 
-        match (left_button, right_button) {
-            (1, 1) => {
-                timers.lock().unwrap().clear_timers();
-                std::thread::sleep(Duration::from_secs(1));
+struct MaybeFuture<F: Future<Output = T> + Unpin, T>(Option<F>);
+impl<F: Future<Output = T> + Unpin, T> Future for MaybeFuture<F, T> {
+    type Output = T;
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        if let Some(ref mut future) = self.as_mut().0 {
+            return std::future::Future::poll(Pin::new(future), cx);
+        }
+        return std::task::Poll::Pending;
+    }
+}
+
+enum TimeoutEvent {
+    TickTimeout,
+    ResetTimeout,
+}
+
+struct ButtonTracker {
+    app: Arc<Mutex<ApplicationState>>,
+    left_state: bool,
+    right_state: bool,
+    // Allows us to check for more button events before executing the action
+    tick_timeout: MaybeFuture<Pin<Box<Sleep>>, ()>,
+    // Allows us to re-trigger ourselves when the reset sequnce has elapsed.
+    reset_timeout: MaybeFuture<Pin<Box<Sleep>>, ()>,
+    // Allows us to wait for buttons to be released before counting them
+    // after a reset sequence
+    reset_debounce: bool,
+}
+impl ButtonTracker {
+    pub fn new(app: Arc<Mutex<ApplicationState>>) -> Self {
+        return Self {
+            app,
+            left_state: false,
+            right_state: false,
+            tick_timeout: MaybeFuture(None),
+            reset_timeout: MaybeFuture(None),
+            reset_debounce: false,
+        };
+    }
+    pub async fn get_timeout(&mut self) -> TimeoutEvent {
+        return tokio::select! {
+            _ = &mut self.tick_timeout => {
+                self.tick_timeout = MaybeFuture(None);
+                TimeoutEvent::TickTimeout
+            },
+            _ = &mut self.reset_timeout => {
+                self.reset_timeout = MaybeFuture(None);
+                TimeoutEvent::ResetTimeout
+            },
+        };
+    }
+    pub fn timeout_update(&mut self, event: TimeoutEvent) {
+        match event {
+            TimeoutEvent::TickTimeout => {
+                log::debug!("Ticking on {:?}", (self.left_state, self.right_state));
+                match (self.left_state, self.right_state) {
+                    (true, true) if !self.reset_debounce => {
+                        self.reset_timeout =
+                            MaybeFuture(Some(Box::pin(tokio::time::sleep(Duration::from_secs(3)))));
+                    }
+                    (true, false) if !self.reset_debounce => {
+                        self.reset_timeout = MaybeFuture(None);
+                        self.app.lock().unwrap().start_left_timer();
+                    }
+                    (false, true) if !self.reset_debounce => {
+                        self.reset_timeout = MaybeFuture(None);
+                        self.app.lock().unwrap().start_right_timer();
+                    }
+                    (false, false) => {
+                        self.reset_debounce = false;
+                    }
+                    _ => {}
+                }
             }
-            (1, 0) => {
-                timers.lock().unwrap().start_left_timer();
+            TimeoutEvent::ResetTimeout => {
+                self.reset_debounce = true;
+                self.app.lock().unwrap().clear_timers();
             }
-            (0, 1) => {
-                timers.lock().unwrap().start_right_timer();
+        }
+    }
+    pub fn update(&mut self, side: ButtonSide, state: bool) {
+        let existing_state = match side {
+            ButtonSide::Left => &mut self.left_state,
+            ButtonSide::Right => &mut self.right_state,
+        };
+        if *existing_state == state {
+            return;
+        }
+        log::debug!("{side:?} button set to {state}");
+        *existing_state = state;
+
+        self.tick_timeout = MaybeFuture(Some(Box::pin(tokio::time::sleep(Duration::from_millis(
+            25,
+        )))));
+    }
+}
+
+async fn track_gpio(timers: Arc<Mutex<ApplicationState>>) {
+    let mut chip = Chip::new("/dev/gpiochip0").unwrap();
+    let mut left_button = AsyncLineEventHandle::new(
+        chip.get_line(23)
+            .unwrap()
+            .events(
+                LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
+                EventRequestFlags::BOTH_EDGES,
+                "read-input",
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let mut right_button = AsyncLineEventHandle::new(
+        chip.get_line(24)
+            .unwrap()
+            .events(
+                LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
+                EventRequestFlags::BOTH_EDGES,
+                "read-input",
+            )
+            .unwrap(),
+    )
+    .unwrap();
+
+    let mut button_tracker = ButtonTracker::new(timers);
+    loop {
+        tokio::select! {
+            event = button_tracker.get_timeout() => {
+                button_tracker.timeout_update(event);
             }
-            _ => {}
+            Some(Ok(left_button)) = left_button.next() => {
+                button_tracker.update(
+                    ButtonSide::Left,
+                    left_button.event_type() == gpio_cdev::EventType::RisingEdge,
+                );
+            },
+            Some(Ok(right_button)) = right_button.next() => {
+                button_tracker.update(
+                    ButtonSide::Right,
+                    right_button.event_type() == gpio_cdev::EventType::RisingEdge,
+                );
+            },
         }
     }
 }
