@@ -88,6 +88,8 @@ impl AudioController {
 struct TimerConfig {
     color: String,
     music_file: Option<PathBuf>,
+    #[serde(default)]
+    flipped: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -178,6 +180,9 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
     // left_style.set_property("background-color", &state.config.left_timer.color);
 
     let left_label = gtk::Label::new(Some("Test left"));
+    if state.config.left_timer.flipped {
+        left_label.set_angle(180.0);
+    }
     left.pack_start(&left_label, true, true, 3);
 
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -203,6 +208,9 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
     // right_style.set_property("background-color", &state.config.right_timer.color);
 
     let right_label = gtk::Label::new(Some("Test right"));
+    if state.config.right_timer.flipped {
+        right_label.set_angle(180.0);
+    }
     right.pack_start(&right_label, true, true, 3);
 
     drop(state);
