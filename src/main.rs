@@ -290,7 +290,7 @@ fn main() {
             eprintln!("Application startup");
             let provider = gtk::CssProvider::new();
             provider
-                .load_from_data(grass::include!("scss/main.scss").as_bytes())
+                .load_from_data(include_bytes!("../css/main.css"))
                 .expect("Failed to load css");
             let screen = gdk::Screen::default().expect("Error initializing gtk css provider.");
             gtk::StyleContext::add_provider_for_screen(
