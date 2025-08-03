@@ -14,7 +14,6 @@ use gtk::prelude::*;
 use futures::StreamExt;
 use rodio::Source;
 use serde::{Deserialize, Serialize};
-use simplelog::WriteLogger;
 use tokio::time::{Instant, Sleep};
 
 struct Timer {
@@ -276,16 +275,6 @@ fn format_timestamp(timestamp_ms: u128) -> String {
 }
 
 fn main() {
-    let log_file = std::fs::File::create("./archery-timer.log").unwrap();
-    WriteLogger::init(
-        log::LevelFilter::Debug,
-        simplelog::ConfigBuilder::new()
-            .add_filter_allow(String::from("archery_timer"))
-            .build(),
-        log_file,
-    )
-    .unwrap();
-
     let config_file = std::fs::File::open("./config.yml").unwrap();
     let config = serde_yaml::from_reader(config_file).unwrap();
     let timers = Arc::new(Mutex::new(ApplicationState::new(config)));
