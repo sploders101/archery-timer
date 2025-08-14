@@ -301,7 +301,7 @@ fn main() {
         });
     }
 
-    {
+    if cfg!(feature = "gpio") {
         let timers = Arc::clone(&timers);
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
