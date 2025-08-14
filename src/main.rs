@@ -445,6 +445,7 @@ fn main() {
 enum ButtonSide {
     Left,
     Right,
+    Internal,
 }
 
 struct MaybeFuture<F: Future<Output = T> + Unpin, T>(Option<F>);
@@ -470,6 +471,7 @@ struct ButtonTracker {
     app: Arc<Mutex<ApplicationState>>,
     left_state: bool,
     right_state: bool,
+    internal_state: bool,
     // Allows us to check for more button events before executing the action
     tick_timeout: Option<Pin<Box<Sleep>>>,
     // Allows us to re-trigger ourselves when the reset sequnce has elapsed.
@@ -484,6 +486,7 @@ impl ButtonTracker {
             app,
             left_state: false,
             right_state: false,
+            internal_state: false,
             tick_timeout: None,
             reset_timeout: None,
             reset_debounce: false,
@@ -504,21 +507,33 @@ impl ButtonTracker {
     pub fn timeout_update(&mut self, event: TimeoutEvent) {
         match event {
             TimeoutEvent::TickTimeout => {
-                log::debug!("Ticking on {:?}", (self.left_state, self.right_state));
-                match (self.left_state, self.right_state) {
-                    (true, true) if !self.reset_debounce => {
+                log::debug!(
+                    "Ticking on {:?}",
+                    (self.left_state, self.right_state, self.internal_state)
+                );
+                match (self.left_state, self.right_state, self.internal_state) {
+                    (false, false, true) if !self.reset_debounce => {
+                        self.reset_timeout = None;
+                        let mut app = self.app.lock().unwrap();
+                        if app.game_timer.is_running() {
+                            app.freeze();
+                        } else {
+                            app.start_game_timer();
+                        }
+                    }
+                    (true, true, false) if !self.reset_debounce => {
                         self.reset_timeout =
                             Some(Box::pin(tokio::time::sleep(Duration::from_secs(3))));
                     }
-                    (true, false) if !self.reset_debounce => {
+                    (true, false, false) if !self.reset_debounce => {
                         self.reset_timeout = None;
                         self.app.lock().unwrap().start_left_timer();
                     }
-                    (false, true) if !self.reset_debounce => {
+                    (false, true, false) if !self.reset_debounce => {
                         self.reset_timeout = None;
                         self.app.lock().unwrap().start_right_timer();
                     }
-                    (false, false) => {
+                    (false, false, false) => {
                         self.reset_debounce = false;
                     }
                     _ => {}
@@ -534,6 +549,7 @@ impl ButtonTracker {
         let existing_state = match side {
             ButtonSide::Left => &mut self.left_state,
             ButtonSide::Right => &mut self.right_state,
+            ButtonSide::Internal => &mut self.internal_state,
         };
         if *existing_state == state {
             return;
@@ -569,6 +585,17 @@ async fn track_gpio(timers: Arc<Mutex<ApplicationState>>) {
             .unwrap(),
     )
     .unwrap();
+    let mut internal_button = AsyncLineEventHandle::new(
+        chip.get_line(17)
+            .unwrap()
+            .events(
+                LineRequestFlags::INPUT | LineRequestFlags::ACTIVE_LOW,
+                EventRequestFlags::RISING_EDGE,
+                "read-input",
+            )
+            .unwrap(),
+    )
+    .unwrap();
 
     let mut button_tracker = ButtonTracker::new(timers);
     loop {
@@ -588,6 +615,12 @@ async fn track_gpio(timers: Arc<Mutex<ApplicationState>>) {
                     right_button.event_type() == gpio_cdev::EventType::RisingEdge,
                 );
             },
+            Some(Ok(internal_button)) = internal_button.next() => {
+                button_tracker.update(
+                    ButtonSide::Internal,
+                    internal_button.event_type() == gpio_cdev::EventType::RisingEdge,
+                );
+            }
         }
     }
 }
