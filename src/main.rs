@@ -146,10 +146,18 @@ struct TimerConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+struct GameTimerConfig {
+    time_secs: u64,
+    color: String,
+    text_color: String,
+    start_sfx: Option<PathBuf>,
+    end_sfx: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Config {
     button_toggle: bool,
-    game_duration_secs: u64,
-    game_timer: TimerConfig,
+    game_timer: GameTimerConfig,
     left_timer: TimerConfig,
     right_timer: TimerConfig,
 }
@@ -164,7 +172,7 @@ struct ApplicationState {
 impl ApplicationState {
     pub fn new(config: Config) -> Self {
         return Self {
-            game_timer: Timer::new(Duration::from_secs(config.game_duration_secs)),
+            game_timer: Timer::new(Duration::from_secs(config.game_timer.time_secs)),
             left_timer: Stopwatch::new(),
             right_timer: Stopwatch::new(),
             audio_controller: AudioController::new(),
@@ -180,6 +188,10 @@ impl ApplicationState {
     }
     pub fn start_game_timer(&mut self) {
         self.clear_timers();
+        if let Some(ref start_sfx) = self.config.game_timer.start_sfx {
+            self.audio_controller.play_file(start_sfx);
+            std::thread::sleep(Duration::from_millis(500));
+        }
         self.game_timer.start();
     }
     pub fn start_left_timer(&mut self) {
@@ -209,7 +221,7 @@ impl ApplicationState {
         self.game_timer.stop();
         self.left_timer.stop();
         self.right_timer.stop();
-        if let Some(ref game_stop_file) = self.config.game_timer.music_file {
+        if let Some(ref game_stop_file) = self.config.game_timer.end_sfx {
             self.audio_controller.play_file(game_stop_file);
         } else {
             self.audio_controller.stop();

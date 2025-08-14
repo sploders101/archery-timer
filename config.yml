@@ -1,5 +1,4 @@
 button_toggle: false
-game_duration_secs: 300
 left_timer:
   text_color: white
   color: red
@@ -7,7 +6,9 @@ left_timer:
 game_timer:
   text_color: white
   color: black
-  music_file: /home/shaunkeys/Desktop/timer-box/airhorn.wav
+  time_secs: 300
+  start_sfx: /home/shaunkeys/Desktop/timer-box/airhorn.wav
+  end_sfx: /home/shaunkeys/Desktop/timer-box/airhorn.wav
 right_timer:
   text_color: white
   color: blue
