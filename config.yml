@@ -1,7 +1,14 @@
 button_toggle: false
+game_duration_secs: 300
 left_timer:
+  text_color: white
   color: red
-  music_file: /home/shaunkeys/Downloads/Benny Hill Show.mp3
+  music_file: /home/shaunkeys/Desktop/timer-box/benny_hill_show.wav
+game_timer:
+  text_color: white
+  color: black
+  music_file: /home/shaunkeys/Desktop/timer-box/airhorn.wav
 right_timer:
+  text_color: white
   color: blue
-  music_file: /home/shaunkeys/Downloads/Henry Mancini - Baby Elephant Walk.mp3
+  music_file: /home/shaunkeys/Desktop/timer-box/baby_elephant.wav

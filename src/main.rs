@@ -16,13 +16,13 @@ use rodio::Source;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, Sleep};
 
-struct Timer {
+struct Stopwatch {
     start_time: Option<Instant>,
     offset: Duration,
 }
-impl Timer {
+impl Stopwatch {
     pub fn new() -> Self {
-        return Timer {
+        return Stopwatch {
             start_time: None,
             offset: Duration::new(0, 0),
         };
@@ -56,6 +56,49 @@ impl Timer {
     }
 }
 
+struct Timer {
+    duration: Duration,
+    start_time: Option<Instant>,
+    offset: Duration,
+}
+impl Timer {
+    pub fn new(duration: Duration) -> Self {
+        return Self {
+            duration,
+            start_time: None,
+            offset: Duration::new(0, 0),
+        };
+    }
+    pub fn is_running(&self) -> bool {
+        return self.start_time.is_some();
+    }
+    pub fn start(&mut self) {
+        if self.start_time.is_some() {
+            return;
+        }
+        self.start_time = Some(Instant::now());
+    }
+    pub fn stop(&mut self) {
+        let elapsed = match self.start_time {
+            Some(start_time) => start_time.elapsed(),
+            None => return,
+        };
+        self.offset += elapsed;
+        self.start_time = None;
+    }
+    pub fn clear(&mut self) {
+        self.start_time = None;
+        self.offset = Duration::from_secs(0);
+    }
+    pub fn get_remaining(&self) -> Duration {
+        let offset_remaining = self.duration.saturating_sub(self.offset);
+        return match self.start_time {
+            Some(start_time) => offset_remaining.saturating_sub(start_time.elapsed()),
+            None => offset_remaining,
+        };
+    }
+}
+
 struct AudioController {
     output_stream: rodio::OutputStream,
     running_player: Option<rodio::Sink>,
@@ -74,6 +117,16 @@ impl AudioController {
         // Start new player
         let file = std::fs::File::open(file_path).unwrap();
         let sink = rodio::Sink::connect_new(self.output_stream.mixer());
+        sink.append(rodio::Decoder::try_from(file).unwrap());
+        self.running_player = Some(sink);
+    }
+    pub fn play_file_loop(&mut self, file_path: &Path) {
+        // Drop existing player to make it stop
+        self.running_player.take();
+
+        // Start new player
+        let file = std::fs::File::open(file_path).unwrap();
+        let sink = rodio::Sink::connect_new(self.output_stream.mixer());
         sink.append(rodio::Decoder::try_from(file).unwrap().repeat_infinite());
         self.running_player = Some(sink);
     }
@@ -86,6 +139,7 @@ impl AudioController {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct TimerConfig {
     color: String,
+    text_color: String,
     music_file: Option<PathBuf>,
     #[serde(default)]
     flipped: bool,
@@ -94,30 +148,39 @@ struct TimerConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Config {
     button_toggle: bool,
+    game_duration_secs: u64,
+    game_timer: TimerConfig,
     left_timer: TimerConfig,
     right_timer: TimerConfig,
 }
 
 struct ApplicationState {
     config: Config,
-    left_timer: Timer,
-    right_timer: Timer,
+    game_timer: Timer,
+    left_timer: Stopwatch,
+    right_timer: Stopwatch,
     audio_controller: AudioController,
 }
 impl ApplicationState {
     pub fn new(config: Config) -> Self {
         return Self {
-            config,
-            left_timer: Timer::new(),
-            right_timer: Timer::new(),
+            game_timer: Timer::new(Duration::from_secs(config.game_duration_secs)),
+            left_timer: Stopwatch::new(),
+            right_timer: Stopwatch::new(),
             audio_controller: AudioController::new(),
+            config,
         };
     }
 
     pub fn clear_timers(&mut self) {
         self.left_timer.clear();
         self.right_timer.clear();
+        self.game_timer.clear();
         self.audio_controller.stop();
+    }
+    pub fn start_game_timer(&mut self) {
+        self.clear_timers();
+        self.game_timer.start();
     }
     pub fn start_left_timer(&mut self) {
         if self.left_timer.is_running() && self.config.button_toggle {
@@ -127,7 +190,7 @@ impl ApplicationState {
         self.right_timer.stop();
         self.left_timer.start();
         if let Some(ref music_path) = self.config.left_timer.music_file {
-            self.audio_controller.play_file(music_path);
+            self.audio_controller.play_file_loop(music_path);
         }
     }
     pub fn start_right_timer(&mut self) {
@@ -138,7 +201,18 @@ impl ApplicationState {
         self.left_timer.stop();
         self.right_timer.start();
         if let Some(ref music_path) = self.config.right_timer.music_file {
-            self.audio_controller.play_file(music_path);
+            self.audio_controller.play_file_loop(music_path);
+        }
+    }
+
+    pub fn freeze(&mut self) {
+        self.game_timer.stop();
+        self.left_timer.stop();
+        self.right_timer.stop();
+        if let Some(ref game_stop_file) = self.config.game_timer.music_file {
+            self.audio_controller.play_file(game_stop_file);
+        } else {
+            self.audio_controller.stop();
         }
     }
 }
@@ -166,8 +240,8 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
             provider
                 .load_from_data(
                     format!(
-                        "* {{ background-color: {}; }}",
-                        state.config.left_timer.color
+                        "* {{ background-color: {}; color: {}; }}",
+                        state.config.left_timer.color, state.config.left_timer.text_color,
                     )
                     .as_bytes(),
                 )
@@ -184,6 +258,30 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
     }
     left.pack_start(&left_label, true, true, 3);
 
+    let center = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    bar.pack_start(&center, false, false, 0);
+    let center_style = center.style_context();
+    center_style.add_class("center-timer");
+    center_style.add_provider(
+        &{
+            let provider = gtk::CssProvider::new();
+            provider
+                .load_from_data(
+                    format!(
+                        "* {{ background-color: {}; color: {}; }}",
+                        state.config.game_timer.color, state.config.game_timer.text_color,
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            provider
+        },
+        100,
+    );
+    let center_label = gtk::Label::new(Some("Test center"));
+    center_label.set_angle(90.0);
+    center.pack_start(&center_label, true, true, 3);
+
     let right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     bar.pack_end(&right, true, true, 0);
     let right_style = right.style_context();
@@ -194,8 +292,8 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
             provider
                 .load_from_data(
                     format!(
-                        "* {{ background-color: {}; }}",
-                        state.config.right_timer.color
+                        "* {{ background-color: {}; color: {}; }}",
+                        state.config.right_timer.color, state.config.right_timer.text_color,
                     )
                     .as_bytes(),
                 )
@@ -224,6 +322,11 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
                     state.clear_timers();
                     return glib::Propagation::Stop;
                 }
+                gdk::keys::constants::g => {
+                    let mut state = state.lock().unwrap();
+                    state.start_game_timer();
+                    return glib::Propagation::Stop;
+                }
                 gdk::keys::constants::j => {
                     let mut state = state.lock().unwrap();
                     state.start_left_timer();
@@ -244,11 +347,18 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
     {
         let window = window.clone();
         glib::timeout_add_local(Duration::from_millis(100), move || {
-            if let Ok(timers) = timers.try_lock() {
+            if let Ok(mut timers) = timers.try_lock() {
+                let game_duration = timers.game_timer.get_remaining().as_millis();
                 let left_duration = timers.left_timer.get_duration().as_millis();
                 let right_duration = timers.right_timer.get_duration().as_millis();
+                if game_duration == 0
+                    && (timers.left_timer.is_running() || timers.right_timer.is_running())
+                {
+                    timers.freeze();
+                }
                 drop(timers);
 
+                center_label.set_text(&format_timestamp(game_duration));
                 left_label.set_text(&format_timestamp(left_duration));
                 right_label.set_text(&format_timestamp(right_duration));
             }
