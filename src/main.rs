@@ -336,7 +336,11 @@ fn activate(application: &gtk::Application, timers: Arc<Mutex<ApplicationState>>
                 }
                 gdk::keys::constants::g => {
                     let mut state = state.lock().unwrap();
-                    state.start_game_timer();
+                    if state.game_timer.is_running() {
+                        state.freeze();
+                    } else {
+                        state.start_game_timer();
+                    }
                     return glib::Propagation::Stop;
                 }
                 gdk::keys::constants::j => {
